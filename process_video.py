@@ -8,6 +8,8 @@ from mediapipe.tasks.python.vision import drawing_utils
 from mediapipe.tasks.python.vision import drawing_styles
 import os
 import logging
+import json
+
 import sys
 
 # 1. Clear any pre-existing handlers that Colab sets up automatically
@@ -29,8 +31,15 @@ logger = logging.getLogger(__name__)
 # ============================================================
 INPUT_VIDEO = "video.mp4"
 OUTPUT_VIDEO = "output_video.mp4"
+OUTPUT_VIDEO_TRAIL = "output_video_com_trail.mp4"
 OUTPUT_FRAMES_DIR = "output_frames"
+OUTPUT_JSON = "pose_annotations.json"
 MODEL_PATH = "pose_landmarker.task"
+
+# COM Trail settings
+TRAIL_LENGTH = 60  # Number of frames to show in trail
+TRAIL_MAX_ALPHA = 0.8
+TRAIL_MIN_ALPHA = 0.1
 
 # Create output directory
 os.makedirs(OUTPUT_FRAMES_DIR, exist_ok=True)
@@ -77,7 +86,7 @@ logger.info("Video info: %sx%s, %s FPS, %s frames", width, height, fps, total_fr
 logger.info("Step 2 complete: input video opened.")
 
 # ============================================================
-# STEP 3: Setup video writer for output
+# STEP 3: Setup video writers for output
 # ============================================================
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 out = cv2.VideoWriter(OUTPUT_VIDEO, fourcc, fps, (width, height))
@@ -86,7 +95,16 @@ if not out.isOpened():
     cap.release()
     detector.close()
     exit(1)
-logger.info("Step 3 complete: output video writer ready.")
+
+# Second video writer for COM trail
+out_trail = cv2.VideoWriter(OUTPUT_VIDEO_TRAIL, fourcc, fps, (width, height))
+if not out_trail.isOpened():
+    logger.error("Could not open output trail video %s", OUTPUT_VIDEO_TRAIL)
+    cap.release()
+    out.release()
+    detector.close()
+    exit(1)
+logger.info("Step 3 complete: output video writers ready.")
 
 # ============================================================
 # STEP 4: Define landmark indices for COM calculation
@@ -203,13 +221,60 @@ def draw_landmarks_and_com(frame, detection_result, com_point):
     
     return annotated_frame
 
-logger.info("Step 5-6 complete: COM calculation and drawing functions ready.")
+# ============================================================
+# STEP 6b: Function to draw COM trail (gradient)
+# ============================================================
+def draw_com_trail(frame, com_history, trail_length=TRAIL_LENGTH):
+    """
+    Draw COM trail with gradient effect (older = more transparent).
+    """
+    trail_frame = frame.copy()
+    num_points = len(com_history)
+    
+    if num_points < 2:
+        return trail_frame
+    
+    # Draw trail segments with gradient alpha
+    for i in range(1, num_points):
+        # Calculate alpha based on position in trail (newer = more opaque)
+        alpha_ratio = i / num_points
+        alpha = TRAIL_MIN_ALPHA + (TRAIL_MAX_ALPHA - TRAIL_MIN_ALPHA) * alpha_ratio
+        
+        pt1 = com_history[i - 1]
+        pt2 = com_history[i]
+        
+        # Color gradient: blue (old) to red (new)
+        blue = int(255 * (1 - alpha_ratio))
+        red = int(255 * alpha_ratio)
+        color = (blue, 0, red)
+        
+        # Line thickness decreases for older segments
+        thickness = max(1, int(4 * alpha_ratio))
+        
+        # Create overlay for alpha blending
+        overlay = trail_frame.copy()
+        cv2.line(overlay, pt1, pt2, color, thickness)
+        cv2.addWeighted(overlay, alpha, trail_frame, 1 - alpha, 0, trail_frame)
+    
+    # Draw current COM position as a bright marker
+    if com_history:
+        current_com = com_history[-1]
+        cv2.circle(trail_frame, current_com, 8, (0, 255, 255), -1)  # Yellow center
+        cv2.circle(trail_frame, current_com, 10, (255, 255, 255), 2)  # White border
+    
+    return trail_frame
+
+logger.info("Step 5-6b complete: COM calculation, drawing, and trail functions ready.")
 
 # ============================================================
 # STEP 7: Process each frame
 # ============================================================
 frame_idx = 0
 timestamp_ms = 0
+
+# Storage for COM history (for trail) and JSON annotations
+com_history = []
+annotations = []
 
 logger.info("Processing frames...")
 logger.info("Step 7 started: entering frame-processing loop.")
@@ -232,23 +297,59 @@ while True:
     
     # Calculate COM if landmarks detected
     com_point = None
+    landmarks_data = None
     if detection_result.pose_landmarks and len(detection_result.pose_landmarks) > 0:
         landmarks = detection_result.pose_landmarks[0]
         com_point = calculate_com(landmarks, width, height)
+        
+        # Store landmarks data for JSON
+        landmarks_data = []
+        for i, lm in enumerate(landmarks):
+            landmarks_data.append({
+                "index": i,
+                "x": lm.x,
+                "y": lm.y,
+                "z": lm.z,
+                "visibility": lm.visibility,
+                "presence": lm.presence
+            })
     
-    # Draw landmarks and COM
+    # Update COM history for trail
+    if com_point is not None:
+        com_history.append(com_point)
+        if len(com_history) > TRAIL_LENGTH:
+            com_history.pop(0)
+    
+    # Draw landmarks and COM (main video)
     annotated_frame = draw_landmarks_and_com(frame, detection_result, com_point)
     
     # Add frame number overlay
     cv2.putText(annotated_frame, f"Frame: {frame_idx}", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
     
+    # Draw COM trail (trail video)
+    trail_frame = draw_com_trail(frame, com_history)
+    cv2.putText(trail_frame, f"Frame: {frame_idx}", (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    cv2.putText(trail_frame, "COM Trail", (10, 70),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+    
     # Save annotated frame
     frame_filename = os.path.join(OUTPUT_FRAMES_DIR, f"frame_{frame_idx:06d}.jpg")
     cv2.imwrite(frame_filename, annotated_frame)
     
-    # Write to output video
+    # Write to output videos
     out.write(annotated_frame)
+    out_trail.write(trail_frame)
+    
+    # Store annotation data for JSON
+    frame_annotation = {
+        "frame_index": frame_idx,
+        "timestamp_ms": timestamp_ms,
+        "com": {"x": com_point[0], "y": com_point[1]} if com_point else None,
+        "landmarks": landmarks_data
+    }
+    annotations.append(frame_annotation)
     
     frame_idx += 1
     timestamp_ms = int(frame_idx * 1000 / fps)
@@ -263,13 +364,39 @@ while True:
         )
 
 # ============================================================
-# STEP 8: Cleanup
+# STEP 8: Save JSON annotations
+# ============================================================
+json_data = {
+    "video_info": {
+        "input_video": INPUT_VIDEO,
+        "width": width,
+        "height": height,
+        "fps": fps,
+        "total_frames": total_frames,
+        "processed_frames": frame_idx
+    },
+    "com_settings": {
+        "trail_length": TRAIL_LENGTH,
+        "segment_weights": SEGMENT_WEIGHTS
+    },
+    "frames": annotations
+}
+
+with open(OUTPUT_JSON, 'w') as f:
+    json.dump(json_data, f, indent=2)
+logger.info("Step 8 complete: JSON annotations saved to %s", OUTPUT_JSON)
+
+# ============================================================
+# STEP 9: Cleanup
 # ============================================================
 cap.release()
 out.release()
+out_trail.release()
 detector.close()
-logger.info("Step 8 complete: video capture, writer, and detector released.")
+logger.info("Step 9 complete: video capture, writers, and detector released.")
 
 logger.info("Done! Processed %s frames.", frame_idx)
 logger.info("Annotated frames saved to: %s/", OUTPUT_FRAMES_DIR)
-logger.info("Output video saved to: %s", OUTPUT_VIDEO)
+logger.info("Output video (landmarks + COM) saved to: %s", OUTPUT_VIDEO)
+logger.info("Output video (COM trail) saved to: %s", OUTPUT_VIDEO_TRAIL)
+logger.info("JSON annotations saved to: %s", OUTPUT_JSON)
