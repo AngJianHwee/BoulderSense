@@ -437,7 +437,7 @@ def create_timing_chart(frame_times: list) -> go.Figure:
 
 @st.fragment(run_every=2)
 def live_preview_fragment():
-    """Fragment that polls for latest progress and displays input video segments during processing."""
+    """Fragment that polls for latest progress and displays output segments as they become available."""
     if not st.session_state.processing:
         return
 
@@ -458,7 +458,7 @@ def live_preview_fragment():
             st.session_state.result = result
             st.session_state.processor = None
 
-            # Store output segments separately (don't replace input segments yet)
+            # Generate output segments from completed video
             if result.success and result.output_video:
                 with st.spinner("Generating output segment previews..."):
                     segment_duration = st.session_state.get("segment_duration", 5)
@@ -472,54 +472,51 @@ def live_preview_fragment():
             st.rerun()
 
     progress = st.session_state.progress
-    # Use input segments during processing, output segments after completion
-    segments = st.session_state.get("input_segments", st.session_state.get("segments", []))
+    # Only show output segments (processed video), not input segments
+    output_segments = st.session_state.get("output_segments", [])
 
-    # Progress bar with text
+    # Progress bar with text - only show if we have real progress data
     progress_pct = progress.get("progress_pct", 0)
     current_frame = progress.get("current_frame", 0)
     total_frames = progress.get("total_frames", 0)
     current_fps = progress.get("current_fps", 0)
     
-    # Prominent progress bar
-    st.progress(progress_pct / 100, text=f"🔄 Processing: {progress_pct:.1f}% ({current_frame}/{total_frames} frames) @ {current_fps:.1f} FPS")
-    
-    # Progress metrics
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Frames", f"{current_frame} / {total_frames}")
-    with col2:
-        st.metric("Processing FPS", f"{current_fps:.1f}")
-    with col3:
-        st.metric("Progress", f"{progress_pct:.1f}%")
-    with col4:
-        elapsed = current_frame / current_fps if current_fps > 0 else 0
-        remaining = (total_frames - current_frame) / current_fps if current_fps > 0 else 0
-        st.metric("Est. Remaining", f"{remaining:.0f}s")
+    # Only display progress UI if we have actual progress (current_frame > 0)
+    if current_frame > 0:
+        # Prominent progress bar
+        st.progress(progress_pct / 100, text=f"🔄 Processing: {progress_pct:.1f}% ({current_frame}/{total_frames} frames) @ {current_fps:.1f} FPS")
+        
+        # Progress metrics
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Frames", f"{current_frame} / {total_frames}")
+        with col2:
+            st.metric("Processing FPS", f"{current_fps:.1f}")
+        with col3:
+            st.metric("Progress", f"{progress_pct:.1f}%")
+        with col4:
+            elapsed = current_frame / current_fps if current_fps > 0 else 0
+            remaining = (total_frames - current_frame) / current_fps if current_fps > 0 else 0
+            st.metric("Est. Remaining", f"{remaining:.0f}s")
 
-    # Latest segment preview (from input video during processing)
-    latest_seg = get_latest_segment(segments)
-    if latest_seg and os.path.exists(latest_seg):
+        # COM data display
+        com_data = progress.get("com_data")
+        if com_data:
+            st.subheader("📍 Current COM Position")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.metric("X (px)", f"{com_data['x']:.1f}")
+            with c2:
+                st.metric("Y (px)", f"{com_data['y']:.1f}")
+    else:
+        # Initial state - waiting for first progress update
+        st.info("⏳ Initializing processing... Waiting for first frame data.")
+
+    # Output segments list (only shows after processing completes)
+    if output_segments:
         segment_duration = st.session_state.get("segment_duration", 5)
-        st.subheader(f"📹 Latest {segment_duration}-Second Segment (Input Preview)")
-        st.video(latest_seg)
-        st.caption(f"Segment: {os.path.basename(latest_seg)}")
-
-    # COM data display
-    com_data = progress.get("com_data")
-    if com_data:
-        st.subheader("📍 Current COM Position")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.metric("X (px)", f"{com_data['x']:.1f}")
-        with c2:
-            st.metric("Y (px)", f"{com_data['y']:.1f}")
-
-    # All segments list
-    if segments:
-        segment_duration = st.session_state.get("segment_duration", 5)
-        with st.expander(f"📁 All {segment_duration}-Second Segments ({len(segments)})", expanded=False):
-            for i, seg in enumerate(segments):
+        with st.expander(f"📁 Processed Output Segments ({len(output_segments)})", expanded=True):
+            for i, seg in enumerate(output_segments):
                 if os.path.exists(seg):
                     st.video(seg)
                     st.caption(f"Segment {i}: {os.path.basename(seg)}")
@@ -648,22 +645,12 @@ def start_processing(ema_alpha, save_frames, save_json, save_trail, segment_dura
     processor = AsyncPoseProcessor(config=config)
     processor.start(input_path, output_dir)
 
-    # Pre-split INPUT video into segments for preview during processing
-    # This gives users something to watch while processing happens
-    with st.spinner("Preparing segment previews..."):
-        input_segments = split_video_into_segments(
-            input_path,
-            output_dir,
-            segment_duration=segment_duration
-        )
-        st.session_state.segments = input_segments
-        st.session_state.input_segments = input_segments  # Keep reference to input segments
-
     # Update session state
     st.session_state.processing = True
     st.session_state.processor = processor
     st.session_state.result = None
-    # Initialize progress with total_frames from video to avoid 0/0 display
+    st.session_state.output_segments = []  # Will be populated after processing completes
+    # Initialize progress with total_frames from video
     cap = cv2.VideoCapture(input_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.release()
@@ -694,30 +681,7 @@ def render_preview_tab():
     st.header("📹 Live Preview")
 
     if st.session_state.processing:
-        # Show prominent progress bar at top of preview tab
-        progress = st.session_state.progress
-        progress_pct = progress.get("progress_pct", 0)
-        current_frame = progress.get("current_frame", 0)
-        total_frames = progress.get("total_frames", 0)
-        current_fps = progress.get("current_fps", 0)
-        
-        # Large progress bar with detailed text
-        st.progress(progress_pct / 100, text=f"🔄 Processing: {progress_pct:.1f}% ({current_frame}/{total_frames} frames) @ {current_fps:.1f} FPS")
-        
-        # Additional progress metrics in columns
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Frames Processed", f"{current_frame} / {total_frames}")
-        with col2:
-            st.metric("Processing FPS", f"{current_fps:.1f}")
-        with col3:
-            st.metric("Progress", f"{progress_pct:.1f}%")
-        with col4:
-            elapsed = current_frame / current_fps if current_fps > 0 else 0
-            remaining = (total_frames - current_frame) / current_fps if current_fps > 0 else 0
-            st.metric("Est. Remaining", f"{remaining:.0f}s")
-        
-        st.info("⏳ Processing in progress... Live preview updates in real-time.")
+        # Progress display is handled by live_preview_fragment
         live_preview_fragment()
 
     elif st.session_state.result and st.session_state.result.success:
@@ -740,16 +704,12 @@ def render_preview_tab():
             else:
                 st.warning("Trail video not found")
 
-        # Segments - show output segments if available, otherwise input segments
+        # Output segments
         output_segments = st.session_state.get("output_segments", [])
-        input_segments = st.session_state.get("input_segments", [])
-        segments = output_segments if output_segments else input_segments
-        
-        if segments:
+        if output_segments:
             segment_duration = st.session_state.get("segment_duration", 5)
-            label = "Output" if output_segments else "Input"
-            st.subheader(f"📁 All {segment_duration}-Second Segments ({label})")
-            for i, seg in enumerate(segments):
+            st.subheader(f"📁 Processed Output Segments ({segment_duration}s each)")
+            for i, seg in enumerate(output_segments):
                 if os.path.exists(seg):
                     with st.expander(f"Segment {i}: {os.path.basename(seg)}"):
                         st.video(seg)
