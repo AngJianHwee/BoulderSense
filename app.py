@@ -542,12 +542,12 @@ def main():
 
         # Start button
         if st.session_state.uploaded_file and not st.session_state.processing:
-            if st.button("🚀 Start Processing", type="primary", use_container_width=True):
+            if st.button("🚀 Start Processing", type="primary", width="stretch"):
                 start_processing(ema_alpha, save_frames, save_json, save_trail, segment_duration)
 
         # Cancel button
         if st.session_state.processing:
-            if st.button("⏹️ Cancel Processing", type="secondary", use_container_width=True):
+            if st.button("⏹️ Cancel Processing", type="secondary", width="stretch"):
                 cancel_processing()
 
         # Status display with progress bar
@@ -889,7 +889,7 @@ def render_analytics_tab():
     # COM Trajectory Chart
     st.subheader("🎯 Center of Mass Trajectory")
     fig_com = create_com_displacement_chart(result.stats, annotations)
-    st.plotly_chart(fig_com, use_container_width=True)
+    st.plotly_chart(fig_com, width="stretch")
 
     st.divider()
 
@@ -926,7 +926,7 @@ def render_analytics_tab():
             df_data.append(row)
 
         df = pd.DataFrame(df_data)
-        st.dataframe(df, use_container_width=True, height=400)
+        st.dataframe(df, width="stretch", height=400)
 
         # Download CSV
         csv = df.to_csv(index=False)
@@ -987,7 +987,7 @@ def render_config_tab():
         {"Segment": k.replace("_", " ").title(), "Weight": f"{v*100:.0f}%"}
         for k, v in segment_weights.items()
     ])
-    st.dataframe(weight_df, use_container_width=True, hide_index=True)
+    st.dataframe(weight_df, width="stretch", hide_index=True)
     
     st.caption("Based on biomechanical body segment parameters (de Leva, 1996)")
     
@@ -1008,7 +1008,7 @@ def render_config_tab():
         {"Segment": k.replace("_", " ").title(), "Landmark Indices": ", ".join(map(str, v))}
         for k, v in com_landmark_indices.items()
     ])
-    st.dataframe(landmark_df, use_container_width=True, hide_index=True)
+    st.dataframe(landmark_df, width="stretch", hide_index=True)
     
     st.caption("MediaPipe Pose Landmarker landmark indices (33 total landmarks)")
     
