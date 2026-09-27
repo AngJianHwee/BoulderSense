@@ -226,6 +226,49 @@ class PoseProcessor:
             self.logger.error("Unexpected error during re-encoding: %s", e)
             return False
 
+    def _split_video_into_segments(self, video_path: str, output_dir: str, segment_duration: int) -> list:
+        """
+        Split video into segments using ffmpeg.
+        Returns list of segment file paths.
+        """
+        try:
+            import ffmpeg
+        except ImportError:
+            self.logger.warning("ffmpeg-python not installed. Segment preview unavailable.")
+            return []
+
+        segments_dir = Path(output_dir)
+        segments_dir.mkdir(exist_ok=True)
+
+        # Get video duration
+        try:
+            probe = ffmpeg.probe(video_path)
+            duration = float(probe['format']['duration'])
+            num_segments = int(duration / segment_duration) + 1
+        except Exception as e:
+            self.logger.error("Failed to probe video for segment splitting: %s", e)
+            return []
+
+        segments = []
+        for i in range(num_segments):
+            start_time = i * segment_duration
+            segment_path = segments_dir / f"segment_{i + 1:03d}.mp4"
+
+            try:
+                (
+                    ffmpeg
+                    .input(video_path, ss=start_time, t=segment_duration)
+                    .output(str(segment_path), c='copy', avoid_negative_ts='make_zero')
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+                if segment_path.exists() and segment_path.stat().st_size > 0:
+                    segments.append(str(segment_path))
+            except ffmpeg.Error:
+                break
+
+        return segments
+
     def _create_detector(self):
         """Create MediaPipe PoseLandmarker detector."""
         base_options = python.BaseOptions(model_asset_path=self.model_path)
@@ -521,14 +564,6 @@ class PoseProcessor:
         annotations = []
         frame_times = []
 
-        # Segment tracking - create segment writers on the fly
-        segment_duration = self.config.segment_duration  # seconds
-        segment_frame_count = int(fps * segment_duration)
-        completed_segments = []
-        segment_writer = None
-        segment_trail_writer = None
-        current_segment_idx = -1
-
         frame_idx = 0
         timestamp_ms = 0
 
@@ -608,37 +643,6 @@ class PoseProcessor:
                 out.write(annotated_frame)
                 out_trail.write(trail_frame)
 
-                # Handle segment writers - create new segment when needed
-                new_segment_idx = frame_idx // segment_frame_count
-                if new_segment_idx != current_segment_idx:
-                    # Close previous segment writer if exists
-                    if segment_writer is not None:
-                        segment_writer.release()
-                        if segment_trail_writer is not None:
-                            segment_trail_writer.release()
-                        self.logger.info("Segment %d completed", current_segment_idx)
-                    
-                    # Start new segment
-                    current_segment_idx = new_segment_idx
-                    segment_path = segments_dir / f"segment_{current_segment_idx + 1:03d}.mp4"
-                    segment_trail_path = segments_dir / f"segment_{current_segment_idx + 1:03d}_trail.mp4"
-                    
-                    segment_writer = cv2.VideoWriter(str(segment_path), fourcc, fps, (width, height))
-                    segment_trail_writer = cv2.VideoWriter(str(segment_trail_path), fourcc, fps, (width, height))
-                    
-                    if segment_writer.isOpened() and segment_trail_writer.isOpened():
-                        self.logger.info("Started segment %d: %s", current_segment_idx + 1, segment_path)
-                    else:
-                        self.logger.warning("Failed to create segment writer for segment %d", current_segment_idx + 1)
-                        segment_writer = None
-                        segment_trail_writer = None
-
-                # Write to segment videos
-                if segment_writer is not None and segment_writer.isOpened():
-                    segment_writer.write(annotated_frame)
-                if segment_trail_writer is not None and segment_trail_writer.isOpened():
-                    segment_trail_writer.write(trail_frame)
-
                 # Store annotation data for JSON
                 frame_annotation = FrameAnnotation(
                     frame_index=frame_idx,
@@ -656,23 +660,13 @@ class PoseProcessor:
                 frame_idx += 1
                 timestamp_ms = int(frame_idx * 1000 / fps)
 
-                # Update completed segments list for progress callback
-                # A segment is "completed" when we've moved past it (i.e., when current_segment_idx > segment_idx)
-                # We track completed segments by checking which segments have been closed
-                if current_segment_idx >= 0:
-                    # Add all segments up to current_segment_idx - 1 as completed
-                    for seg_idx in range(current_segment_idx):
-                        seg_path = segments_dir / f"segment_{seg_idx + 1:03d}.mp4"
-                        if seg_path.exists() and seg_path.stat().st_size > 0 and str(seg_path) not in completed_segments:
-                            completed_segments.append(str(seg_path))
-
                 # Progress callback - update every frame for smooth progress bar
                 if callback:
                     current_fps = 1.0 / np.mean(frame_times[-30:]) if frame_times else 0
                     com_data = None
                     if com_smoothed:
                         com_data = {"x": com_smoothed[0], "y": com_smoothed[1]}
-                    callback(frame_idx, total_frames, float(current_fps), com_data, completed_segments.copy())
+                    callback(frame_idx, total_frames, float(current_fps), com_data, [])
 
                 if frame_idx % 30 == 0:
                     self.logger.info(
@@ -685,19 +679,18 @@ class PoseProcessor:
             cap.release()
             out.release()
             out_trail.release()
-            # Close segment writers
-            if segment_writer is not None:
-                segment_writer.release()
-            if segment_trail_writer is not None:
-                segment_trail_writer.release()
             if self._detector:
                 self._detector.close()
 
-        # Add the last segment if it was created
-        if current_segment_idx >= 0:
-            seg_path = segments_dir / f"segment_{current_segment_idx + 1:03d}.mp4"
-            if seg_path.exists() and seg_path.stat().st_size > 0 and str(seg_path) not in completed_segments:
-                completed_segments.append(str(seg_path))
+        # Create segment videos by splitting the final output videos using ffmpeg
+        # This ensures segments match the final video exactly (same as split_video_into_segments in app.py)
+        completed_segments = []
+        segment_trail_videos = []
+        if self.config.segment_duration > 0:
+            self.logger.info("Creating segment videos by splitting final output videos...")
+            completed_segments = self._split_video_into_segments(str(output_video_path), str(segments_dir), self.config.segment_duration)
+            segment_trail_videos = self._split_video_into_segments(str(output_trail_path), str(segments_dir), self.config.segment_duration)
+            self.logger.info("Created %d main segments and %d trail segments", len(completed_segments), len(segment_trail_videos))
 
         # Compute statistics
         frame_times_np = np.array(frame_times)
@@ -782,30 +775,31 @@ class PoseProcessor:
      
             # Re-encode segment videos for web compatibility
             segment_videos = []
-            segment_trail_videos = []
-            if current_segment_idx >= 0:
+            segment_trail_videos_web = []
+            
+            # Re-encode main segment videos
+            if completed_segments:
                 self.logger.info("Re-encoding segment videos for web compatibility...")
-                for seg_idx in range(current_segment_idx + 1):
-                    seg_path = segments_dir / f"segment_{seg_idx + 1:03d}.mp4"
-                    seg_trail_path = segments_dir / f"segment_{seg_idx + 1:03d}_trail.mp4"
-                    
-                    if seg_path.exists() and seg_path.stat().st_size > 0:
-                        web_seg_path = segments_dir / f"segment_{seg_idx + 1:03d}_web.mp4"
-                        seg_reencoded = self._reencode_video_web_compatible(str(seg_path), str(web_seg_path))
-                        if seg_reencoded:
-                            segment_videos.append(str(web_seg_path))
-                            self.logger.info("Web-compatible segment %d: %s", seg_idx + 1, web_seg_path)
-                        else:
-                            segment_videos.append(str(seg_path))
-                    
-                    if seg_trail_path.exists() and seg_trail_path.stat().st_size > 0:
-                        web_seg_trail_path = segments_dir / f"segment_{seg_idx + 1:03d}_trail_web.mp4"
-                        seg_trail_reencoded = self._reencode_video_web_compatible(str(seg_trail_path), str(web_seg_trail_path))
-                        if seg_trail_reencoded:
-                            segment_trail_videos.append(str(web_seg_trail_path))
-                            self.logger.info("Web-compatible segment trail %d: %s", seg_idx + 1, web_seg_trail_path)
-                        else:
-                            segment_trail_videos.append(str(seg_trail_path))
+                for i, seg_path in enumerate(completed_segments):
+                    web_seg_path = Path(seg_path).with_name(Path(seg_path).stem + "_web.mp4")
+                    seg_reencoded = self._reencode_video_web_compatible(seg_path, str(web_seg_path))
+                    if seg_reencoded:
+                        segment_videos.append(str(web_seg_path))
+                        self.logger.info("Web-compatible segment %d: %s", i + 1, web_seg_path)
+                    else:
+                        segment_videos.append(seg_path)
+            
+            # Re-encode trail segment videos
+            if segment_trail_videos:
+                self.logger.info("Re-encoding segment trail videos for web compatibility...")
+                for i, seg_trail_path in enumerate(segment_trail_videos):
+                    web_seg_trail_path = Path(seg_trail_path).with_name(Path(seg_trail_path).stem + "_web.mp4")
+                    seg_trail_reencoded = self._reencode_video_web_compatible(seg_trail_path, str(web_seg_trail_path))
+                    if seg_trail_reencoded:
+                        segment_trail_videos_web.append(str(web_seg_trail_path))
+                        self.logger.info("Web-compatible segment trail %d: %s", i + 1, web_seg_trail_path)
+                    else:
+                        segment_trail_videos_web.append(seg_trail_path)
      
             return ProcessingResult(
                 success=True,
@@ -823,7 +817,7 @@ class PoseProcessor:
                 },
                 stats=stats,
                 segment_videos=segment_videos,
-                segment_trail_videos=segment_trail_videos
+                segment_trail_videos=segment_trail_videos_web
             )
 
 

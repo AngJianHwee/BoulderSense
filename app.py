@@ -458,30 +458,15 @@ def live_preview_fragment():
             st.session_state.result = result
             st.session_state.processor = None
 
-            # Generate output segments from completed video (fallback if not already created)
-            if result.success and result.output_video:
-                with st.spinner("Generating output segment previews..."):
-                    segment_duration = st.session_state.get("segment_duration", 5)
-                    output_segments = split_video_into_segments(
-                        result.output_video,
-                        result.output_dir,
-                        segment_duration=segment_duration
-                    )
-                    st.session_state.output_segments = output_segments
+            # Segments are now created during processing (in pose_processor.py) by splitting final videos
+            # No need to generate them here as fallback
 
             st.rerun()
 
     progress = st.session_state.progress
-    # Get completed segments from progress (created during processing)
-    completed_segments = progress.get("completed_segments", [])
-    # Also check session state for any previously stored segments
-    output_segments = st.session_state.get("output_segments", [])
-    
-    # Merge segments from progress (new ones during processing) with session state
-    if completed_segments:
-        # Update session state with latest segments
-        st.session_state.output_segments = completed_segments
-        output_segments = completed_segments
+    # Segments are now created after processing completes, not during
+    # So we don't show them in live preview during processing
+    output_segments = []
 
     # Progress bar with text - only show if we have real progress data
     progress_pct = progress.get("progress_pct", 0)
