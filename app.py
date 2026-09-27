@@ -11,6 +11,7 @@ import time
 import subprocess
 import threading
 import requests
+import cv2
 from pathlib import Path
 from typing import Optional
 import pandas as pd
@@ -279,7 +280,7 @@ def split_video_into_segments(video_path: str, output_dir: str, segment_duration
     return segments
 
 
-def get_latest_segment(segments: list) -> str:
+def get_latest_segment(segments: list) -> Optional[str]:
     """Get the latest segment file path."""
     if segments:
         return segments[-1]
@@ -436,7 +437,7 @@ def create_timing_chart(frame_times: list) -> go.Figure:
 
 @st.fragment(run_every=2)
 def live_preview_fragment():
-    """Fragment that polls for latest segment and displays it."""
+    """Fragment that polls for latest progress and displays input video segments during processing."""
     if not st.session_state.processing:
         return
 
@@ -457,21 +458,22 @@ def live_preview_fragment():
             st.session_state.result = result
             st.session_state.processor = None
 
-            # Split output video into segments for preview
+            # Store output segments separately (don't replace input segments yet)
             if result.success and result.output_video:
-                with st.spinner("Generating segment previews..."):
+                with st.spinner("Generating output segment previews..."):
                     segment_duration = st.session_state.get("segment_duration", 5)
-                    segments = split_video_into_segments(
+                    output_segments = split_video_into_segments(
                         result.output_video,
                         result.output_dir,
                         segment_duration=segment_duration
                     )
-                    st.session_state.segments = segments
+                    st.session_state.output_segments = output_segments
 
             st.rerun()
 
     progress = st.session_state.progress
-    segments = st.session_state.segments
+    # Use input segments during processing, output segments after completion
+    segments = st.session_state.get("input_segments", st.session_state.get("segments", []))
 
     # Progress bar with text
     progress_pct = progress.get("progress_pct", 0)
@@ -495,11 +497,11 @@ def live_preview_fragment():
         remaining = (total_frames - current_frame) / current_fps if current_fps > 0 else 0
         st.metric("Est. Remaining", f"{remaining:.0f}s")
 
-    # Latest segment preview
+    # Latest segment preview (from input video during processing)
     latest_seg = get_latest_segment(segments)
     if latest_seg and os.path.exists(latest_seg):
         segment_duration = st.session_state.get("segment_duration", 5)
-        st.subheader(f"📹 Latest {segment_duration}-Second Segment")
+        st.subheader(f"📹 Latest {segment_duration}-Second Segment (Input Preview)")
         st.video(latest_seg)
         st.caption(f"Segment: {os.path.basename(latest_seg)}")
 
@@ -584,59 +586,9 @@ def main():
             if st.button("⏹️ Cancel Processing", type="secondary", width="stretch"):
                 cancel_processing()
 
-        # Status display with progress bar
+        # Status display - progress is handled by live_preview_fragment
         if st.session_state.processing:
-            # Poll processor for latest progress
-            processor = st.session_state.get("processor")
-            if processor:
-                while True:
-                    progress = processor.get_progress()
-                    if progress is None:
-                        break
-                    st.session_state.progress = progress
-                
-                # Check for result
-                result = processor.get_result(timeout=0.1)
-                if result is not None:
-                    st.session_state.processing = False
-                    st.session_state.result = result
-                    st.session_state.processor = None
-
-                    # Split output video into segments for preview
-                    if result.success and result.output_video:
-                        with st.spinner("Generating segment previews..."):
-                            segment_duration = st.session_state.get("segment_duration", 5)
-                            segments = split_video_into_segments(
-                                result.output_video,
-                                result.output_dir,
-                                segment_duration=segment_duration
-                            )
-                            st.session_state.segments = segments
-
-                    st.rerun()
-
-            progress = st.session_state.progress
-            progress_pct = progress.get("progress_pct", 0)
-            current_frame = progress.get("current_frame", 0)
-            total_frames = progress.get("total_frames", 0)
-            current_fps = progress.get("current_fps", 0)
-            
-            # Prominent progress bar with FPS
-            st.progress(progress_pct / 100, text=f"🔄 Processing: {progress_pct:.1f}% ({current_frame}/{total_frames} frames) @ {current_fps:.1f} FPS")
-            
-            # Progress metrics with estimated time remaining
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Frames", f"{current_frame} / {total_frames}")
-            with col2:
-                st.metric("Processing FPS", f"{current_fps:.1f}")
-            with col3:
-                st.metric("Progress", f"{progress_pct:.1f}%")
-            with col4:
-                remaining = (total_frames - current_frame) / current_fps if current_fps > 0 else 0
-                st.metric("Est. Remaining", f"{remaining:.0f}s")
-            
-            st.info("⏳ Processing in progress...")
+            st.info("⏳ Processing in progress... See Live Preview tab for real-time updates.")
         elif st.session_state.result and st.session_state.result.success:
             st.success("✅ Processing complete!")
         elif st.session_state.result and not st.session_state.result.success:
@@ -696,12 +648,26 @@ def start_processing(ema_alpha, save_frames, save_json, save_trail, segment_dura
     processor = AsyncPoseProcessor(config=config)
     processor.start(input_path, output_dir)
 
+    # Pre-split INPUT video into segments for preview during processing
+    # This gives users something to watch while processing happens
+    with st.spinner("Preparing segment previews..."):
+        input_segments = split_video_into_segments(
+            input_path,
+            output_dir,
+            segment_duration=segment_duration
+        )
+        st.session_state.segments = input_segments
+        st.session_state.input_segments = input_segments  # Keep reference to input segments
+
     # Update session state
     st.session_state.processing = True
     st.session_state.processor = processor
     st.session_state.result = None
-    st.session_state.segments = []
-    st.session_state.progress = {"current_frame": 0, "total_frames": 0, "current_fps": 0, "com_data": None, "progress_pct": 0}
+    # Initialize progress with total_frames from video to avoid 0/0 display
+    cap = cv2.VideoCapture(input_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    st.session_state.progress = {"current_frame": 0, "total_frames": total_frames, "current_fps": 0, "com_data": None, "progress_pct": 0}
     
     # Store settings for Configuration tab display
     st.session_state.ema_alpha = ema_alpha
@@ -774,11 +740,16 @@ def render_preview_tab():
             else:
                 st.warning("Trail video not found")
 
-        # Segments
-        if st.session_state.segments:
+        # Segments - show output segments if available, otherwise input segments
+        output_segments = st.session_state.get("output_segments", [])
+        input_segments = st.session_state.get("input_segments", [])
+        segments = output_segments if output_segments else input_segments
+        
+        if segments:
             segment_duration = st.session_state.get("segment_duration", 5)
-            st.subheader(f"📁 All {segment_duration}-Second Segments")
-            for i, seg in enumerate(st.session_state.segments):
+            label = "Output" if output_segments else "Input"
+            st.subheader(f"📁 All {segment_duration}-Second Segments ({label})")
+            for i, seg in enumerate(segments):
                 if os.path.exists(seg):
                     with st.expander(f"Segment {i}: {os.path.basename(seg)}"):
                         st.video(seg)
@@ -828,21 +799,31 @@ def render_results_tab():
         else:
             st.warning("Trail video not found")
 
+    # Output segments
+    output_segments = st.session_state.get("output_segments", [])
+    if output_segments:
+        segment_duration = st.session_state.get("segment_duration", 5)
+        st.subheader(f"📁 Output Segments ({segment_duration}s each)")
+        for i, seg in enumerate(output_segments):
+            if os.path.exists(seg):
+                with st.expander(f"Segment {i}: {os.path.basename(seg)}"):
+                    st.video(seg)
+
     st.divider()
 
     # Statistics
     st.subheader("📈 Processing Statistics")
 
     # Timing stats
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Frames Processed", stats.frame_count)
-    with col2:
-        st.metric("Total Time", f"{stats.total_time_sec:.1f}s")
-    with col3:
-        st.metric("Effective FPS", f"{stats.effective_fps:.1f}")
-    with col4:
-        st.metric("Avg Frame Time", f"{stats.mean_frame_time_sec*1000:.1f}ms")
+    # col1, col2, col3, col4 = st.columns(4)
+    # with col1:
+    #     st.metric("Frames Processed", stats.frame_count)
+    # with col2:
+    #     st.metric("Total Time", f"{stats.total_time_sec:.1f}s")
+    # with col3:
+    #     st.metric("Effective FPS", f"{stats.effective_fps:.1f}")
+    # with col4:
+    #     st.metric("Avg Frame Time", f"{stats.mean_frame_time_sec*1000:.1f}ms")
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
