@@ -20,7 +20,6 @@ from plotly.subplots import make_subplots
 
 # Import our processor
 from pose_processor import (
-    PoseProcessor,
     AsyncPoseProcessor,
     ProcessingConfig,
     ProcessingResult,
