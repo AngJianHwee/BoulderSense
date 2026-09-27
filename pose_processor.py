@@ -107,6 +107,8 @@ class ProcessingResult:
     video_info: Dict[str, Any]
     stats: ProcessingStats
     error: Optional[str] = None
+    segment_videos: List[str] = None
+    segment_trail_videos: List[str] = None
 
 
 # ============================================================
@@ -756,28 +758,55 @@ class PoseProcessor:
             with open(output_json_path, 'w') as f:
                 json.dump(json_data, f, indent=2)
             self.logger.info("JSON annotations saved to %s", output_json_path)
-    
+     
             self.logger.info("Done! Processed %s frames.", frame_idx)
             self.logger.info("Output video saved to: %s", output_video_path)
             self.logger.info("Trail video saved to: %s", output_trail_path)
-    
+     
             # Re-encode videos for web-compatible H.264 playback
             web_output_video = output_path / "output_video_web.mp4"
             web_output_trail = output_path / "output_video_com_trail_web.mp4"
-            
+             
             self.logger.info("Re-encoding videos for web compatibility...")
             video_reencoded = self._reencode_video_web_compatible(str(output_video_path), str(web_output_video))
             trail_reencoded = self._reencode_video_web_compatible(str(output_trail_path), str(web_output_trail))
-            
+             
             # Use web-compatible versions if re-encoding succeeded
             final_output_video = str(web_output_video) if video_reencoded else str(output_video_path)
             final_output_trail = str(web_output_trail) if trail_reencoded else str(output_trail_path)
-            
+             
             if video_reencoded:
                 self.logger.info("Web-compatible video: %s", final_output_video)
             if trail_reencoded:
                 self.logger.info("Web-compatible trail video: %s", final_output_trail)
-    
+     
+            # Re-encode segment videos for web compatibility
+            segment_videos = []
+            segment_trail_videos = []
+            if current_segment_idx >= 0:
+                self.logger.info("Re-encoding segment videos for web compatibility...")
+                for seg_idx in range(current_segment_idx + 1):
+                    seg_path = segments_dir / f"segment_{seg_idx + 1:03d}.mp4"
+                    seg_trail_path = segments_dir / f"segment_{seg_idx + 1:03d}_trail.mp4"
+                    
+                    if seg_path.exists() and seg_path.stat().st_size > 0:
+                        web_seg_path = segments_dir / f"segment_{seg_idx + 1:03d}_web.mp4"
+                        seg_reencoded = self._reencode_video_web_compatible(str(seg_path), str(web_seg_path))
+                        if seg_reencoded:
+                            segment_videos.append(str(web_seg_path))
+                            self.logger.info("Web-compatible segment %d: %s", seg_idx + 1, web_seg_path)
+                        else:
+                            segment_videos.append(str(seg_path))
+                    
+                    if seg_trail_path.exists() and seg_trail_path.stat().st_size > 0:
+                        web_seg_trail_path = segments_dir / f"segment_{seg_idx + 1:03d}_trail_web.mp4"
+                        seg_trail_reencoded = self._reencode_video_web_compatible(str(seg_trail_path), str(web_seg_trail_path))
+                        if seg_trail_reencoded:
+                            segment_trail_videos.append(str(web_seg_trail_path))
+                            self.logger.info("Web-compatible segment trail %d: %s", seg_idx + 1, web_seg_trail_path)
+                        else:
+                            segment_trail_videos.append(str(seg_trail_path))
+     
             return ProcessingResult(
                 success=True,
                 output_dir=str(output_path),
@@ -792,7 +821,9 @@ class PoseProcessor:
                     "total_frames": total_frames,
                     "processed_frames": frame_idx
                 },
-                stats=stats
+                stats=stats,
+                segment_videos=segment_videos,
+                segment_trail_videos=segment_trail_videos
             )
 
 

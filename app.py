@@ -723,15 +723,27 @@ def render_preview_tab():
             else:
                 st.warning("Trail video not found")
 
-        # Output segments
-        output_segments = st.session_state.get("output_segments", [])
-        if output_segments:
+        # Output segments - use web-compatible versions from result if available
+        segment_videos = getattr(result, 'segment_videos', None) or st.session_state.get("output_segments", [])
+        segment_trail_videos = getattr(result, 'segment_trail_videos', None) or []
+        
+        if segment_videos:
             segment_duration = st.session_state.get("segment_duration", 5)
             st.subheader(f"📁 Processed Output Segments ({segment_duration}s each)")
-            for i, seg in enumerate(output_segments):
+            
+            # Show main segment videos
+            for i, seg in enumerate(segment_videos):
                 if os.path.exists(seg):
                     with st.expander(f"Segment {i}: {os.path.basename(seg)}"):
                         st.video(seg)
+            
+            # Show trail segment videos if available
+            if segment_trail_videos:
+                st.subheader(f"📁 Trail Segments ({segment_duration}s each)")
+                for i, seg in enumerate(segment_trail_videos):
+                    if os.path.exists(seg):
+                        with st.expander(f"Trail Segment {i}: {os.path.basename(seg)}"):
+                            st.video(seg)
 
     else:
         st.info("👈 Upload a video and click **Start Processing** to begin")
@@ -778,14 +790,24 @@ def render_results_tab():
         else:
             st.warning("Trail video not found")
 
-    # Output segments
-    output_segments = st.session_state.get("output_segments", [])
-    if output_segments:
+    # Output segments - use web-compatible versions from result if available
+    segment_videos = getattr(result, 'segment_videos', None) or st.session_state.get("output_segments", [])
+    segment_trail_videos = getattr(result, 'segment_trail_videos', None) or []
+    
+    if segment_videos:
         segment_duration = st.session_state.get("segment_duration", 5)
         st.subheader(f"📁 Output Segments ({segment_duration}s each)")
-        for i, seg in enumerate(output_segments):
+        for i, seg in enumerate(segment_videos):
             if os.path.exists(seg):
                 with st.expander(f"Segment {i}: {os.path.basename(seg)}"):
+                    st.video(seg)
+    
+    if segment_trail_videos:
+        segment_duration = st.session_state.get("segment_duration", 5)
+        st.subheader(f"📁 Trail Segments ({segment_duration}s each)")
+        for i, seg in enumerate(segment_trail_videos):
+            if os.path.exists(seg):
+                with st.expander(f"Trail Segment {i}: {os.path.basename(seg)}"):
                     st.video(seg)
 
     st.divider()
