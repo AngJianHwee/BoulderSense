@@ -40,6 +40,7 @@ class ProcessingConfig:
     save_frames: bool = True
     save_json: bool = True
     save_trail_video: bool = True
+    segment_duration: int = 5  # Duration of preview segments in seconds
 
     def __post_init__(self):
         if self.segment_weights is None:
@@ -112,8 +113,8 @@ class ProcessingResult:
 # PROGRESS CALLBACK TYPE
 # ============================================================
 
-ProgressCallback = Callable[[int, int, float, Optional[Dict]], None]
-# Args: current_frame, total_frames, current_fps, latest_com_data
+ProgressCallback = Callable[[int, int, float, Optional[Dict], Optional[List[str]]], None]
+# Args: current_frame, total_frames, current_fps, latest_com_data, completed_segments
 
 
 # ============================================================
@@ -408,7 +409,7 @@ class PoseProcessor:
         Args:
             input_video_path: Path to input video file
             output_dir: Directory to save all outputs
-            progress_callback: Optional callback(current_frame, total_frames, fps, com_data)
+            progress_callback: Optional callback(current_frame, total_frames, fps, com_data, completed_segments)
 
         Returns:
             ProcessingResult with all output paths and statistics
@@ -426,6 +427,10 @@ class PoseProcessor:
         frames_dir = output_path / "output_frames"
         if self.config.save_frames:
             frames_dir.mkdir(exist_ok=True)
+
+        # Create segments directory for progressive preview
+        segments_dir = output_path / "segments"
+        segments_dir.mkdir(exist_ok=True)
 
         output_video_path = output_path / "output_video.mp4"
         output_trail_path = output_path / "output_video_com_trail.mp4"
@@ -514,6 +519,14 @@ class PoseProcessor:
         annotations = []
         frame_times = []
 
+        # Segment tracking - create segment writers on the fly
+        segment_duration = self.config.segment_duration  # seconds
+        segment_frame_count = int(fps * segment_duration)
+        completed_segments = []
+        segment_writer = None
+        segment_trail_writer = None
+        current_segment_idx = -1
+
         frame_idx = 0
         timestamp_ms = 0
 
@@ -593,6 +606,37 @@ class PoseProcessor:
                 out.write(annotated_frame)
                 out_trail.write(trail_frame)
 
+                # Handle segment writers - create new segment when needed
+                new_segment_idx = frame_idx // segment_frame_count
+                if new_segment_idx != current_segment_idx:
+                    # Close previous segment writer if exists
+                    if segment_writer is not None:
+                        segment_writer.release()
+                        if segment_trail_writer is not None:
+                            segment_trail_writer.release()
+                        self.logger.info("Segment %d completed", current_segment_idx)
+                    
+                    # Start new segment
+                    current_segment_idx = new_segment_idx
+                    segment_path = segments_dir / f"segment_{current_segment_idx + 1:03d}.mp4"
+                    segment_trail_path = segments_dir / f"segment_{current_segment_idx + 1:03d}_trail.mp4"
+                    
+                    segment_writer = cv2.VideoWriter(str(segment_path), fourcc, fps, (width, height))
+                    segment_trail_writer = cv2.VideoWriter(str(segment_trail_path), fourcc, fps, (width, height))
+                    
+                    if segment_writer.isOpened() and segment_trail_writer.isOpened():
+                        self.logger.info("Started segment %d: %s", current_segment_idx + 1, segment_path)
+                    else:
+                        self.logger.warning("Failed to create segment writer for segment %d", current_segment_idx + 1)
+                        segment_writer = None
+                        segment_trail_writer = None
+
+                # Write to segment videos
+                if segment_writer is not None and segment_writer.isOpened():
+                    segment_writer.write(annotated_frame)
+                if segment_trail_writer is not None and segment_trail_writer.isOpened():
+                    segment_trail_writer.write(trail_frame)
+
                 # Store annotation data for JSON
                 frame_annotation = FrameAnnotation(
                     frame_index=frame_idx,
@@ -610,13 +654,23 @@ class PoseProcessor:
                 frame_idx += 1
                 timestamp_ms = int(frame_idx * 1000 / fps)
 
+                # Update completed segments list for progress callback
+                # A segment is "completed" when we've moved past it (i.e., when current_segment_idx > segment_idx)
+                # We track completed segments by checking which segments have been closed
+                if current_segment_idx >= 0:
+                    # Add all segments up to current_segment_idx - 1 as completed
+                    for seg_idx in range(current_segment_idx):
+                        seg_path = segments_dir / f"segment_{seg_idx + 1:03d}.mp4"
+                        if seg_path.exists() and seg_path.stat().st_size > 0 and str(seg_path) not in completed_segments:
+                            completed_segments.append(str(seg_path))
+
                 # Progress callback - update every frame for smooth progress bar
                 if callback:
                     current_fps = 1.0 / np.mean(frame_times[-30:]) if frame_times else 0
                     com_data = None
                     if com_smoothed:
                         com_data = {"x": com_smoothed[0], "y": com_smoothed[1]}
-                    callback(frame_idx, total_frames, current_fps, com_data)
+                    callback(frame_idx, total_frames, float(current_fps), com_data, completed_segments.copy())
 
                 if frame_idx % 30 == 0:
                     self.logger.info(
@@ -629,8 +683,19 @@ class PoseProcessor:
             cap.release()
             out.release()
             out_trail.release()
+            # Close segment writers
+            if segment_writer is not None:
+                segment_writer.release()
+            if segment_trail_writer is not None:
+                segment_trail_writer.release()
             if self._detector:
                 self._detector.close()
+
+        # Add the last segment if it was created
+        if current_segment_idx >= 0:
+            seg_path = segments_dir / f"segment_{current_segment_idx + 1:03d}.mp4"
+            if seg_path.exists() and seg_path.stat().st_size > 0 and str(seg_path) not in completed_segments:
+                completed_segments.append(str(seg_path))
 
         # Compute statistics
         frame_times_np = np.array(frame_times)
@@ -750,12 +815,13 @@ class AsyncPoseProcessor:
     def start(self, input_video_path: str, output_dir: str):
         """Start processing in background thread."""
         def worker():
-            def progress_cb(current, total, fps, com_data):
+            def progress_cb(current, total, fps, com_data, completed_segments):
                 self._progress_queue.put({
                     "current_frame": current,
                     "total_frames": total,
                     "current_fps": fps,
                     "com_data": com_data,
+                    "completed_segments": completed_segments,
                     "progress_pct": (current / total * 100) if total > 0 else 0
                 })
 
@@ -792,7 +858,7 @@ class AsyncPoseProcessor:
         if self._processor:
             self._processor.cancel()
 
-    def wait(self, timeout: Optional[float] = None) -> ProcessingResult:
+    def wait(self, timeout: Optional[float] = None) -> Optional[ProcessingResult]:
         """Wait for completion and return result."""
         if self._thread:
             self._thread.join(timeout=timeout)

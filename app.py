@@ -458,7 +458,7 @@ def live_preview_fragment():
             st.session_state.result = result
             st.session_state.processor = None
 
-            # Generate output segments from completed video
+            # Generate output segments from completed video (fallback if not already created)
             if result.success and result.output_video:
                 with st.spinner("Generating output segment previews..."):
                     segment_duration = st.session_state.get("segment_duration", 5)
@@ -472,8 +472,16 @@ def live_preview_fragment():
             st.rerun()
 
     progress = st.session_state.progress
-    # Only show output segments (processed video), not input segments
+    # Get completed segments from progress (created during processing)
+    completed_segments = progress.get("completed_segments", [])
+    # Also check session state for any previously stored segments
     output_segments = st.session_state.get("output_segments", [])
+    
+    # Merge segments from progress (new ones during processing) with session state
+    if completed_segments:
+        # Update session state with latest segments
+        st.session_state.output_segments = completed_segments
+        output_segments = completed_segments
 
     # Progress bar with text - only show if we have real progress data
     progress_pct = progress.get("progress_pct", 0)
@@ -512,7 +520,7 @@ def live_preview_fragment():
         # Initial state - waiting for first progress update
         st.info("⏳ Initializing processing... Waiting for first frame data.")
 
-    # Output segments list (only shows after processing completes)
+    # Output segments list (shows during processing as segments are created)
     if output_segments:
         segment_duration = st.session_state.get("segment_duration", 5)
         with st.expander(f"📁 Processed Output Segments ({len(output_segments)})", expanded=True):
@@ -638,7 +646,8 @@ def start_processing(ema_alpha, save_frames, save_json, save_trail, segment_dura
         ema_alpha=ema_alpha,
         save_frames=save_frames,
         save_json=save_json,
-        save_trail_video=save_trail
+        save_trail_video=save_trail,
+        segment_duration=segment_duration
     )
 
     # Create async processor
@@ -649,12 +658,12 @@ def start_processing(ema_alpha, save_frames, save_json, save_trail, segment_dura
     st.session_state.processing = True
     st.session_state.processor = processor
     st.session_state.result = None
-    st.session_state.output_segments = []  # Will be populated after processing completes
+    st.session_state.output_segments = []  # Will be populated during processing
     # Initialize progress with total_frames from video
     cap = cv2.VideoCapture(input_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.release()
-    st.session_state.progress = {"current_frame": 0, "total_frames": total_frames, "current_fps": 0, "com_data": None, "progress_pct": 0}
+    st.session_state.progress = {"current_frame": 0, "total_frames": total_frames, "current_fps": 0, "com_data": None, "progress_pct": 0, "completed_segments": []}
     
     # Store settings for Configuration tab display
     st.session_state.ema_alpha = ema_alpha
