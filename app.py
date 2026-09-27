@@ -440,6 +440,36 @@ def live_preview_fragment():
     if not st.session_state.processing:
         return
 
+    # Poll processor for latest progress
+    processor = st.session_state.get("processor")
+    if processor:
+        # Get all pending progress updates
+        while True:
+            progress = processor.get_progress()
+            if progress is None:
+                break
+            st.session_state.progress = progress
+        
+        # Check for result
+        result = processor.get_result(timeout=0.1)
+        if result is not None:
+            st.session_state.processing = False
+            st.session_state.result = result
+            st.session_state.processor = None
+
+            # Split output video into segments for preview
+            if result.success and result.output_video:
+                with st.spinner("Generating segment previews..."):
+                    segment_duration = st.session_state.get("segment_duration", 5)
+                    segments = split_video_into_segments(
+                        result.output_video,
+                        result.output_dir,
+                        segment_duration=segment_duration
+                    )
+                    st.session_state.segments = segments
+
+            st.rerun()
+
     progress = st.session_state.progress
     segments = st.session_state.segments
 
@@ -556,6 +586,35 @@ def main():
 
         # Status display with progress bar
         if st.session_state.processing:
+            # Poll processor for latest progress
+            processor = st.session_state.get("processor")
+            if processor:
+                while True:
+                    progress = processor.get_progress()
+                    if progress is None:
+                        break
+                    st.session_state.progress = progress
+                
+                # Check for result
+                result = processor.get_result(timeout=0.1)
+                if result is not None:
+                    st.session_state.processing = False
+                    st.session_state.result = result
+                    st.session_state.processor = None
+
+                    # Split output video into segments for preview
+                    if result.success and result.output_video:
+                        with st.spinner("Generating segment previews..."):
+                            segment_duration = st.session_state.get("segment_duration", 5)
+                            segments = split_video_into_segments(
+                                result.output_video,
+                                result.output_dir,
+                                segment_duration=segment_duration
+                            )
+                            st.session_state.segments = segments
+
+                    st.rerun()
+
             progress = st.session_state.progress
             progress_pct = progress.get("progress_pct", 0)
             current_frame = progress.get("current_frame", 0)
@@ -662,46 +721,6 @@ def cancel_processing():
     st.session_state.processing = False
     st.session_state.processor = None
     st.rerun()
-
-
-def check_processing_status():
-    """Check background processing status and update session state."""
-    if not st.session_state.processing or not st.session_state.processor:
-        return
-
-    processor = st.session_state.processor
-
-    # Get progress updates
-    while True:
-        progress = processor.get_progress()
-        if progress is None:
-            break
-        st.session_state.progress = progress
-
-    # Check for result
-    result = processor.get_result(timeout=0.1)
-    if result is not None:
-        st.session_state.processing = False
-        st.session_state.result = result
-        st.session_state.processor = None
-
-        # Split output video into segments for preview
-        if result.success and result.output_video:
-            with st.spinner("Generating segment previews..."):
-                segment_duration = st.session_state.get("segment_duration", 5)
-                segments = split_video_into_segments(
-                    result.output_video,
-                    result.output_dir,
-                    segment_duration=segment_duration
-                )
-                st.session_state.segments = segments
-
-        st.rerun()
-
-    # If still processing, schedule another check
-    if st.session_state.processing:
-        time.sleep(0.1)
-        st.rerun()
 
 
 def render_preview_tab():
@@ -1095,6 +1114,4 @@ if __name__ == "__main__":
     # Initialize ngrok tunnel if configured
     init_ngrok_tunnel()
     
-    # Check processing status on each run
-    check_processing_status()
     main()
