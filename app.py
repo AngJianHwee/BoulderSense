@@ -559,24 +559,24 @@ def main():
 
         # Processing settings
         with st.expander("⚙️ Processing Settings", expanded=True):
-            ema_alpha = st.slider(
+            ema_alpha = float(st.slider(
                 "EMA Smoothing Alpha",
                 min_value=0.1, max_value=0.5, value=0.3, step=0.05,
                 help="Lower = more smoothing, higher = more responsive"
-            )
+            ))
 
-            save_frames = st.checkbox("Save annotated frames", value=True)
-            save_json = st.checkbox("Save JSON annotations", value=True)
-            save_trail = st.checkbox("Save trail video (full COM trajectory)", value=True)
+            save_frames = bool(st.checkbox("Save annotated frames", value=True))
+            save_json = bool(st.checkbox("Save JSON annotations", value=True))
+            save_trail = bool(st.checkbox("Save trail video (full COM trajectory)", value=True))
 
         st.divider()
 
         # Segment settings
         with st.expander("🎬 Segment Preview Settings", expanded=False):
-            segment_duration = st.number_input(
+            segment_duration = int(st.number_input(
                 "Segment Duration (seconds)",
                 min_value=1, max_value=30, value=5, step=1
-            )
+            ))
             st.caption("Videos will be split into segments of this duration for progressive preview")
 
         st.divider()
@@ -584,7 +584,12 @@ def main():
         # Start button
         if st.session_state.uploaded_file and not st.session_state.processing:
             if st.button("🚀 Start Processing", type="primary", width="stretch"):
-                start_processing(ema_alpha, save_frames, save_json, save_trail, segment_duration)
+                try:
+                    start_processing(ema_alpha, save_frames, save_json, save_trail, segment_duration)
+                except Exception as e:
+                    st.error(f"❌ Failed to start processing: {type(e).__name__}: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
 
         # Cancel button
         if st.session_state.processing:
@@ -641,14 +646,19 @@ def start_processing(ema_alpha, save_frames, save_json, save_trail, segment_dura
     input_path = save_uploaded_file(st.session_state.uploaded_file)
     output_dir = create_output_dir()
 
-    # Create config
-    config = ProcessingConfig(
-        ema_alpha=ema_alpha,
-        save_frames=save_frames,
-        save_json=save_json,
-        save_trail_video=save_trail,
-        segment_duration=segment_duration
-    )
+    # Ensure proper Python types (Streamlit widgets may return numpy types)
+    try:
+        config = ProcessingConfig(
+            ema_alpha=float(ema_alpha),
+            save_frames=bool(save_frames),
+            save_json=bool(save_json),
+            save_trail_video=bool(save_trail),
+            segment_duration=int(segment_duration)
+        )
+    except Exception as e:
+        st.error(f"❌ Configuration error: {type(e).__name__}: {e}")
+        st.error(f"Received values: ema_alpha={ema_alpha} ({type(ema_alpha)}), save_frames={save_frames} ({type(save_frames)}), save_json={save_json} ({type(save_json)}), save_trail={save_trail} ({type(save_trail)}), segment_duration={segment_duration} ({type(segment_duration)})")
+        raise
 
     # Create async processor
     processor = AsyncPoseProcessor(config=config)
@@ -1064,4 +1074,9 @@ if __name__ == "__main__":
     # Initialize ngrok tunnel if configured
     init_ngrok_tunnel()
     
-    main()
+    try:
+        main()
+    except Exception as e:
+        st.error(f"❌ Application error: {type(e).__name__}: {e}")
+        import traceback
+        st.code(traceback.format_exc())
