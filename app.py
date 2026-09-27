@@ -450,16 +450,21 @@ def live_preview_fragment():
     total_frames = progress.get("total_frames", 0)
     current_fps = progress.get("current_fps", 0)
     
-    st.progress(progress_pct / 100, text=f"Processing: {progress_pct:.1f}% ({current_frame}/{total_frames} frames) @ {current_fps:.1f} FPS")
+    # Prominent progress bar
+    st.progress(progress_pct / 100, text=f"🔄 Processing: {progress_pct:.1f}% ({current_frame}/{total_frames} frames) @ {current_fps:.1f} FPS")
     
     # Progress metrics
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Frames", f"{current_frame} / {total_frames}")
     with col2:
         st.metric("Processing FPS", f"{current_fps:.1f}")
     with col3:
         st.metric("Progress", f"{progress_pct:.1f}%")
+    with col4:
+        elapsed = current_frame / current_fps if current_fps > 0 else 0
+        remaining = (total_frames - current_frame) / current_fps if current_fps > 0 else 0
+        st.metric("Est. Remaining", f"{remaining:.0f}s")
 
     # Latest segment preview
     latest_seg = get_latest_segment(segments)
@@ -558,17 +563,20 @@ def main():
             total_frames = progress.get("total_frames", 0)
             current_fps = progress.get("current_fps", 0)
             
-            # Prominent progress bar
-            st.progress(progress_pct / 100, text=f"Processing: {progress_pct:.1f}% ({current_frame}/{total_frames} frames)")
+            # Prominent progress bar with FPS
+            st.progress(progress_pct / 100, text=f"🔄 Processing: {progress_pct:.1f}% ({current_frame}/{total_frames} frames) @ {current_fps:.1f} FPS")
             
-            # Progress metrics
-            col1, col2, col3 = st.columns(3)
+            # Progress metrics with estimated time remaining
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("Frames", f"{current_frame} / {total_frames}")
             with col2:
                 st.metric("Processing FPS", f"{current_fps:.1f}")
             with col3:
                 st.metric("Progress", f"{progress_pct:.1f}%")
+            with col4:
+                remaining = (total_frames - current_frame) / current_fps if current_fps > 0 else 0
+                st.metric("Est. Remaining", f"{remaining:.0f}s")
             
             st.info("⏳ Processing in progress...")
         elif st.session_state.result and st.session_state.result.success:
@@ -693,7 +701,7 @@ def check_processing_status():
 
     # If still processing, schedule another check
     if st.session_state.processing:
-        time.sleep(0.5)
+        time.sleep(0.1)
         st.rerun()
 
 
@@ -702,16 +710,30 @@ def render_preview_tab():
     st.header("📹 Live Preview")
 
     if st.session_state.processing:
-        # Show progress bar at top of preview tab too
+        # Show prominent progress bar at top of preview tab
         progress = st.session_state.progress
         progress_pct = progress.get("progress_pct", 0)
         current_frame = progress.get("current_frame", 0)
         total_frames = progress.get("total_frames", 0)
         current_fps = progress.get("current_fps", 0)
         
-        st.progress(progress_pct / 100, text=f"Processing: {progress_pct:.1f}% ({current_frame}/{total_frames} frames) @ {current_fps:.1f} FPS")
+        # Large progress bar with detailed text
+        st.progress(progress_pct / 100, text=f"🔄 Processing: {progress_pct:.1f}% ({current_frame}/{total_frames} frames) @ {current_fps:.1f} FPS")
         
-        st.info("Processing in progress... Live preview updates every 2 seconds.")
+        # Additional progress metrics in columns
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Frames Processed", f"{current_frame} / {total_frames}")
+        with col2:
+            st.metric("Processing FPS", f"{current_fps:.1f}")
+        with col3:
+            st.metric("Progress", f"{progress_pct:.1f}%")
+        with col4:
+            elapsed = current_frame / current_fps if current_fps > 0 else 0
+            remaining = (total_frames - current_frame) / current_fps if current_fps > 0 else 0
+            st.metric("Est. Remaining", f"{remaining:.0f}s")
+        
+        st.info("⏳ Processing in progress... Live preview updates in real-time.")
         live_preview_fragment()
 
     elif st.session_state.result and st.session_state.result.success:

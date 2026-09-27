@@ -610,8 +610,8 @@ class PoseProcessor:
                 frame_idx += 1
                 timestamp_ms = int(frame_idx * 1000 / fps)
 
-                # Progress callback
-                if callback and frame_idx % 5 == 0:  # Update every 5 frames
+                # Progress callback - update every frame for smooth progress bar
+                if callback:
                     current_fps = 1.0 / np.mean(frame_times[-30:]) if frame_times else 0
                     com_data = None
                     if com_smoothed:
