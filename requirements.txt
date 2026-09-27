@@ -1,0 +1,15 @@
+# Core dependencies
+streamlit>=1.37
+mediapipe>=0.10.14
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# Visualization
+plotly>=5.15.0
+pandas>=2.0.0
+
+# Video processing
+ffmpeg-python>=0.2.0
+
+# Optional: for better performance
+# torch>=2.0.0  # if using GPU acceleration

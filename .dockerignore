@@ -1,0 +1,62 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.pytest_cache
+.coverage
+htmlcov
+.tox
+.venv
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+temp_uploads/
+temp_outputs/
+*.mp4
+*.avi
+*.mov
+*.mkv
+output_frames/
+*.json
+*.log
+
+# Documentation
+*.md
+!README.md
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Ngrok
+ngrok
+ngrok.yml
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# MediaPipe model (downloaded at runtime)
+pose_landmarker.task
